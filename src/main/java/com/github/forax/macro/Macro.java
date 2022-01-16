@@ -23,7 +23,7 @@ public class Macro {
   }
 
   public static MethodHandle createMH(MethodType methodType,
-                                      List<MacroParameter> parameters,
+                                      List<? extends MacroParameter> parameters,
                                       Linker linker) {
     Objects.requireNonNull(methodType, "targetType is null");
     Objects.requireNonNull(parameters, "parameters is null");
@@ -32,12 +32,13 @@ public class Macro {
   }
 
   private sealed interface Argument { }
-  private record ConstantArgument(Class<?> type, int position, DeriveFunction function, Object constant) implements Argument { }
+
   private enum ValueArgument implements Argument { INSTANCE }
   private record IgnoreArgument(Class<?> type, int position) implements Argument { }
-  private record CacheArgument(int constantIndex, int valueIndex, DeriveFunction function, Kind kind) implements Argument {
+  private record GuardedArgument(int position, boolean dropValue, Class<?> type, int constantIndex, int valueIndex, DeriveFunction function, Kind kind) implements Argument {
     enum Kind { MONOMORPHIC, POLYMORPHIC }
   }
+  private record RequireCheckArgument(int position, boolean dropValue, Class<?> type, DeriveFunction function, Object constant) implements Argument { }
 
   private record AnalysisResult(List<Argument> arguments, List<Object> constants, List<Object> values, MethodType targetType) {
     private AnalysisResult {
@@ -67,7 +68,8 @@ public class Macro {
           var constant = constantParameter.function().derive(type, arg);
           if (constantParameter.cacheKind() == CacheKind.CHECKED) {
             constants.add(constant);
-            yield new ConstantArgument(type, i, constantParameter.function(), constant);
+            yield new RequireCheckArgument(i, constantParameter.dropValue(), type,
+                constantParameter.function(), constant);
           }
           var constantIndex = constants.size();
           var valueIndex = values.size();
@@ -76,10 +78,11 @@ public class Macro {
           values.add(arg);
           valueTypes.add(type);
 
-          yield new CacheArgument(constantIndex, valueIndex, constantParameter.function(),
+          yield new GuardedArgument(i, constantParameter.dropValue(), type,
+              constantIndex, valueIndex, constantParameter.function(),
               constantParameter.cacheKind() == CacheKind.MONOMORPHIC?
-                  CacheArgument.Kind.MONOMORPHIC:
-                  CacheArgument.Kind.POLYMORPHIC);
+                  GuardedArgument.Kind.MONOMORPHIC:
+                  GuardedArgument.Kind.POLYMORPHIC);
         }
       };
       arguments.add(argument);
@@ -141,15 +144,15 @@ public class Macro {
       // deal with cache arguments
       for(var argument: arguments) {
         switch(argument) {
-          case CacheArgument cacheArgument -> {
-            var constant = constants.get(cacheArgument.constantIndex);
-            var type = target.type().parameterType(cacheArgument.valueIndex);
-            var deriveCheck = MethodHandles.insertArguments(DERIVE_CHECK, 1, type, cacheArgument.function, constant)
+          case GuardedArgument guardedArgument -> {
+            var constant = constants.get(guardedArgument.constantIndex);
+            var type = guardedArgument.type;
+            var deriveCheck = MethodHandles.insertArguments(DERIVE_CHECK, 1, type, guardedArgument.function, constant)
                 .asType(methodType(boolean.class, type));
-            var test = MethodHandles.dropArguments(deriveCheck, 0, target.type().parameterList().subList(0, cacheArgument.valueIndex));
-            var fallback = cacheArgument.kind == CacheArgument.Kind.MONOMORPHIC?
+            var test = MethodHandles.dropArguments(deriveCheck, 0, target.type().parameterList().subList(0, guardedArgument.valueIndex));
+            var fallback = guardedArgument.kind == GuardedArgument.Kind.MONOMORPHIC?
                 this.fallback:
-                new InliningCacheCallSite(target.type(), cacheArgument, constants, linker).dynamicInvoker();
+                new InliningCacheCallSite(target.type(), guardedArgument, constants, linker).dynamicInvoker();
             target = MethodHandles.guardWithTest(test, target, fallback);
           }
           default -> {}
@@ -159,12 +162,19 @@ public class Macro {
       // deal with constant arguments and ignore arguments
       for(var argument: arguments) {
         switch (argument) {
-          case ConstantArgument constantArgument -> {
-            var type = constantArgument.type;
-            target = MethodHandles.dropArguments(target, constantArgument.position, type);
-            var requireConstant = MethodHandles.insertArguments(REQUIRE_CONSTANT, 1, type, constantArgument.function, constantArgument.constant)
+          case GuardedArgument guardedArgument -> {
+            if (guardedArgument.dropValue) {
+              target = MethodHandles.dropArguments(target, guardedArgument.position, guardedArgument.type);
+            }
+          }
+          case RequireCheckArgument requireCheckArgument -> {
+            var type = requireCheckArgument.type;
+            if (requireCheckArgument.dropValue) {
+              target = MethodHandles.dropArguments(target, requireCheckArgument.position, type);
+            }
+            var requireConstant = MethodHandles.insertArguments(REQUIRE_CONSTANT, 1, type, requireCheckArgument.function, requireCheckArgument.constant)
                 .asType(methodType(type, type));
-            target = MethodHandles.filterArguments(target, constantArgument.position, requireConstant);
+            target = MethodHandles.filterArguments(target, requireCheckArgument.position, requireConstant);
           }
           case IgnoreArgument ignoreArgument -> {
             target = MethodHandles.dropArguments(target, ignoreArgument.position, ignoreArgument.type);
@@ -189,34 +199,34 @@ public class Macro {
       }
     }
 
-    private final CacheArgument cacheArgument;
+    private final GuardedArgument guardedArgument;
     private final List<Object> constants;
     private final Linker linker;
 
-    public InliningCacheCallSite(MethodType type, CacheArgument cacheArgument, List<Object> constants, Linker linker) {
+    public InliningCacheCallSite(MethodType type, GuardedArgument guardedArgument, List<Object> constants, Linker linker) {
       super(type);
-      this.cacheArgument = cacheArgument;
+      this.guardedArgument = guardedArgument;
       this.constants = constants;
       this.linker = linker;
       var fallback = FALLBACK.bindTo(this)
-          .asType(methodType(MethodHandle.class, type.parameterType(cacheArgument.valueIndex)));
-      fallback = MethodHandles.dropArguments(fallback, 0, type.parameterList().subList(0, cacheArgument.valueIndex));
+          .asType(methodType(MethodHandle.class, type.parameterType(guardedArgument.valueIndex)));
+      fallback = MethodHandles.dropArguments(fallback, 0, type.parameterList().subList(0, guardedArgument.valueIndex));
       setTarget(MethodHandles.foldArguments(MethodHandles.exactInvoker(type), fallback));
     }
 
     private MethodHandle fallback(Object receiver) throws ReflectiveOperationException {
-      var type = type().parameterType(cacheArgument.valueIndex);
-      var constant = cacheArgument.function.derive(type, receiver);
+      var type = guardedArgument.type;
+      var constant = guardedArgument.function.derive(type, receiver);
       var constants = new ArrayList<>(this.constants);
-      constants.set(cacheArgument.constantIndex, constant);
+      constants.set(guardedArgument.constantIndex, constant);
       var target = linker.link(List.copyOf(constants), type());
 
-      var deriveCheck = MethodHandles.insertArguments(RootCallSite.DERIVE_CHECK, 1, type, cacheArgument.function, constant)
+      var deriveCheck = MethodHandles.insertArguments(RootCallSite.DERIVE_CHECK, 1, type, guardedArgument.function, constant)
           .asType(methodType(boolean.class, type));
-      var test = MethodHandles.dropArguments(deriveCheck, 0, type().parameterList().subList(0, cacheArgument.valueIndex));
+      var test = MethodHandles.dropArguments(deriveCheck, 0, type().parameterList().subList(0, guardedArgument.valueIndex));
       var guard = MethodHandles.guardWithTest(test,
           target,
-          new InliningCacheCallSite(type(), cacheArgument, constants, linker).dynamicInvoker());
+          new InliningCacheCallSite(type(), guardedArgument, constants, linker).dynamicInvoker());
       setTarget(guard);
 
       return target;
