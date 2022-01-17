@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodHandles.Lookup;
+import java.lang.invoke.MethodType;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -48,24 +49,35 @@ public class MacroTest {
   @Test
   public void dynamicDispatch() {
     interface Dispatch {
-      <T> T call(Object receiver, Object value);
+      <T> T call(Object receiver, String name, MethodType methodType, Object... args);
 
-      static Dispatch of(Lookup lookup, String name, Class<?> returnType) {
+      static Dispatch of(Lookup lookup) {
         record DispatchImpl(MethodHandle mh) implements Dispatch {
           @Override
           @SuppressWarnings("unchecked")
-          public <T> T call(Object receiver, Object value) {
+          public <T> T call(Object receiver, String name, MethodType methodType, Object... args) {
             try {
-              return (T) mh.invokeExact(receiver, value);
+              return (T) mh.invokeExact(receiver, name, methodType, args);
             } catch(Throwable t) {
               throw Macro.rethrow(t);
             }
           }
         }
 
-        var mh = Macro.createMH(methodType(Object.class, Object.class, Object.class),
-            List.of(MacroParameter.CONSTANT_CLASS.relink(), MacroParameter.VALUE),
-            (constants, type) -> lookup.findVirtual((Class<?>) constants.get(0), name, methodType(returnType, long.class)).asType(type));
+        var mh = Macro.createMH(methodType(Object.class, Object.class, String.class, MethodType.class, Object[].class),
+            List.of(MacroParameter.CONSTANT_CLASS.polymorphic(), MacroParameter.CONSTANT_VALUE, MacroParameter.CONSTANT_VALUE, MacroParameter.VALUE),
+            (constants, type) -> {
+
+              System.err.println("in linker: type " + type);
+              System.err.println("in linker: constants " + constants);
+
+              var receiverClass = (Class<?>) constants.get(0);
+              var name = (String) constants.get(1);
+              var methodType = (MethodType) constants.get(2);
+              return lookup.findVirtual(receiverClass, name, methodType)
+                  .asSpreader(Object[].class, methodType.parameterCount())
+                  .asType(type);
+            });
         return new DispatchImpl(mh);
       }
     }
@@ -77,11 +89,11 @@ public class MacroTest {
       String m(long value) { return "B"; }
     }
 
-    var dispatch = Dispatch.of(MethodHandles.lookup(), "m", String.class);
-    assertEquals("A", dispatch.call(new A(), 12));
-    assertEquals("B", dispatch.call(new B(), 42));
-    assertEquals("A", dispatch.call(new A(), 34));
-    assertEquals("B", dispatch.call(new B(), 53));
+    var dispatch = Dispatch.of(MethodHandles.lookup());
+    assertEquals("A", dispatch.call(new A(), "m", methodType(String.class, long.class), 3L));
+    assertEquals("B", dispatch.call(new B(), "m", methodType(String.class, long.class), 3L));
+    assertEquals("A", dispatch.call(new A(), "m", methodType(String.class, long.class), 3L));
+    assertEquals("B", dispatch.call(new B(), "m", methodType(String.class, long.class), 3L));
   }
 
   @Test

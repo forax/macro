@@ -11,7 +11,10 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.invoke.MutableCallSite;
 import java.lang.invoke.WrongMethodTypeException;
+import java.lang.reflect.Parameter;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static java.lang.invoke.MethodType.methodType;
@@ -71,7 +74,7 @@ public class Macro {
   public static MethodHandle createMH(MethodType methodType,
                                       List<? extends MacroParameter> parameters,
                                       Linker linker) {
-    requireNonNull(methodType, "targetType is null");
+    requireNonNull(methodType, "linkageType is null");
     requireNonNull(parameters, "parameters is null");
     requireNonNull(linker, "linker is null");
     return new RootCallSite(methodType, List.copyOf(parameters), linker).dynamicInvoker();
@@ -80,17 +83,17 @@ public class Macro {
   private sealed interface Argument { }
 
   private enum ValueArgument implements Argument { INSTANCE }
-  private record IgnoreArgument(Class<?> type, int position) implements Argument { }
-  private record GuardedArgument(int position, boolean dropValue, Class<?> type, int constantIndex, int valueIndex, ProjectionFunction function, Kind kind) implements Argument {
+  private record IgnoredArgument(Class<?> type, int position) implements Argument { }
+  private record GuardedArgument(Class<?> type, int position, boolean dropValue, int constantIndex, int valueIndex, ProjectionFunction function, Kind kind) implements Argument {
     enum Kind { MONOMORPHIC, POLYMORPHIC }
   }
-  private record RequireCheckArgument(int position, boolean dropValue, Class<?> type, ProjectionFunction function, Object constant) implements Argument { }
+  private record RequiredArgument(Class<?> type, int position, boolean dropValue, ProjectionFunction function, Object constant) implements Argument { }
 
-  private record AnalysisResult(List<Argument> arguments, List<Object> constants, List<Object> values, MethodType targetType) {
+  private record AnalysisResult(List<Argument> arguments, List<Object> constants, List<Object> values, MethodType linkageType) {
     private AnalysisResult {
-      arguments = List.copyOf(arguments);
-      constants = List.copyOf(constants);
-      values = List.copyOf(values);
+      arguments = Collections.unmodifiableList(arguments);
+      constants = Collections.unmodifiableList(constants);
+      values = Collections.unmodifiableList(values);
     }
   }
 
@@ -104,27 +107,27 @@ public class Macro {
       var arg = args[i];
       var type = methodType.parameterType(i);
       var argument = switch (parameter) {
-        case IgnoreParameter ignoreParameter -> new IgnoreArgument(type, i);
+        case IgnoreParameter ignoreParameter -> new IgnoredArgument(type, i);
         case ValueParameter valueParameter -> {
           values.add(arg);
           valueTypes.add(type);
           yield ValueArgument.INSTANCE;
         }
         case ConstantParameter constantParameter -> {
-          var constant = constantParameter.function().computeConstant(type, arg);
-          if (constantParameter.policy() == ConstantPolicy.ERROR) {
-            constants.add(constant);
-            yield new RequireCheckArgument(i, constantParameter.dropValue(), type,
-                constantParameter.function(), constant);
-          }
           var constantIndex = constants.size();
           var valueIndex = values.size();
-
+          var constant = constantParameter.function().computeConstant(type, arg);
           constants.add(constant);
-          values.add(arg);
-          valueTypes.add(type);
+          if (!constantParameter.dropValue()) {
+            values.add(arg);
+            valueTypes.add(type);
+          }
 
-          yield new GuardedArgument(i, constantParameter.dropValue(), type,
+          if (constantParameter.policy() == ConstantPolicy.ERROR) {
+            yield new RequiredArgument(type, i, constantParameter.dropValue(),
+                constantParameter.function(), constant);
+          }
+          yield new GuardedArgument(type, i, constantParameter.dropValue(),
               constantIndex, valueIndex, constantParameter.function(),
               constantParameter.policy() == ConstantPolicy.RELINK ?
                   GuardedArgument.Kind.MONOMORPHIC:
@@ -136,10 +139,13 @@ public class Macro {
     return new AnalysisResult(arguments, constants, values, methodType(methodType.returnType(), valueTypes));
   }
 
-  private static MethodHandle link(Linker linker, List<Object> constants, MethodType targetType) {
+  private static MethodHandle link(Linker linker, List<Object> constants, MethodType linkageType) {
+
+    System.err.println("link " + constants + " linkageType: " + linkageType);
+
     MethodHandle target;
     try {
-      target = linker.apply(constants, targetType);
+      target = linker.apply(constants, linkageType);
     } catch (ClassNotFoundException e) {
       throw (NoClassDefFoundError) new NoClassDefFoundError().initCause(e);
     } catch (IllegalAccessException e) {
@@ -153,7 +159,7 @@ public class Macro {
     }
 
     requireNonNull(target, "linker return value is null");
-    if (!target.type().equals(targetType)) {
+    if (!target.type().equals(linkageType)) {
       throw new WrongMethodTypeException("linker return value as the wrong type");
     }
     return target;
@@ -166,7 +172,7 @@ public class Macro {
       try {
         FALLBACK = lookup.findVirtual(RootCallSite.class, "fallback", methodType(Object.class, Object[].class));
         DERIVE_CHECK = lookup.findStatic(RootCallSite.class, "derivedCheck", methodType(boolean.class, Object.class, Class.class, ProjectionFunction.class, Object.class));
-        REQUIRE_CONSTANT = lookup.findStatic(RootCallSite.class, "requireConstant", methodType(void.class, Object.class, Class.class, ProjectionFunction.class, Object.class));
+        REQUIRE_CONSTANT = lookup.findStatic(RootCallSite.class, "requireConstant", methodType(Object.class, Object.class, Class.class, ProjectionFunction.class, Object.class));
       } catch (NoSuchMethodException | IllegalAccessException e) {
        throw new AssertionError(e);
       }
@@ -174,133 +180,96 @@ public class Macro {
 
     private final List<MacroParameter> parameters;
     private final Linker linker;
-    private final MethodHandle fallback;
+    private final MethodHandle globalFallback;
 
     public RootCallSite(MethodType type, List<MacroParameter> parameters, Linker linker) {
       super(type);
       this.parameters = parameters;
       this.linker = linker;
-      var fallback = FALLBACK.bindTo(this).asCollector(Object[].class, type.parameterCount()).asType(type);
-      this.fallback = fallback;
-      setTarget(fallback);
+      var globalFallback = FALLBACK.bindTo(this).asCollector(Object[].class, type.parameterCount()).asType(type);
+      this.globalFallback = globalFallback;
+      setTarget(globalFallback);
     }
 
     private static boolean derivedCheck(Object arg, Class<?> type, ProjectionFunction function, Object constant) {
       return function.computeConstant(type, arg) == constant;
     }
 
-    private static void requireConstant(Object arg, Class<?> type, ProjectionFunction function, Object constant) {
+    private static Object requireConstant(Object arg, Class<?> type, ProjectionFunction function, Object constant) {
       if (function.computeConstant(type, arg) != constant) {
-        throw new IllegalStateException("constant violation for argument " + arg);
+        throw new IllegalStateException("constant violation for argument " + arg + " != " + constant);
       }
+      return arg;
     }
 
-    private MethodHandle installGuards(List<Argument> arguments, List<Object> constants, MethodHandle target) {
-      for(var argument: arguments) {
-        switch(argument) {
-          case GuardedArgument guardedArgument -> {
-            var constant = constants.get(guardedArgument.constantIndex);
-            var type = guardedArgument.type;
-            var deriveCheck = MethodHandles.insertArguments(DERIVE_CHECK, 1, type, guardedArgument.function, constant)
-                .asType(methodType(boolean.class, type));
-            var test = MethodHandles.dropArguments(deriveCheck, 0, target.type().parameterList().subList(0, guardedArgument.valueIndex));
-            var fallback = guardedArgument.kind == GuardedArgument.Kind.MONOMORPHIC?
-                this.fallback:
-                new InliningCacheCallSite(target.type(), guardedArgument, constants, linker).dynamicInvoker();
-            target = MethodHandles.guardWithTest(test, target, fallback);
-          }
-          default -> {}
-        }
-      }
-      return target;
-    }
+    private static MethodHandle dropValuesAndInstallGuards(List<MacroParameter> parameters, List<Argument> arguments, List<Object> constants,
+                                                           Linker linker,
+                                                           MethodType methodType, MethodHandle target, MethodHandle globalFallback) {
 
-    private static MethodHandle dropValuesAndRequireConstants(List<Argument> arguments, MethodHandle target) {
+      // take care of the dropped values
       for(var argument: arguments) {
         switch (argument) {
-          case GuardedArgument guardedArgument && guardedArgument.dropValue-> {
-            target = MethodHandles.dropArguments(target, guardedArgument.position, guardedArgument.type);
+          case IgnoredArgument ignoredArgument -> {
+            target = MethodHandles.dropArguments(target, ignoredArgument.position, ignoredArgument.type);
           }
-          case RequireCheckArgument requireCheckArgument -> {
-            var type = requireCheckArgument.type;
-            if (requireCheckArgument.dropValue) {
-              target = MethodHandles.dropArguments(target, requireCheckArgument.position, type);
+          case GuardedArgument guardedArgument -> {
+            if (guardedArgument.dropValue) {
+              target = MethodHandles.dropArguments(target, guardedArgument.position, guardedArgument.type);
             }
-            var requireConstant = MethodHandles.insertArguments(REQUIRE_CONSTANT, 1, type, requireCheckArgument.function, requireCheckArgument.constant)
+          }
+          case RequiredArgument requiredArgument -> {
+            if (requiredArgument.dropValue) {
+              target = MethodHandles.dropArguments(target, requiredArgument.position, requiredArgument.type);
+            }
+          }
+          case ValueArgument __ -> {}
+        }
+      }
+
+      // install guards
+      for(var argument: arguments) {
+        switch (argument) {
+          case IgnoredArgument __ -> {}
+          case GuardedArgument guardedArgument -> {
+            var type = guardedArgument.type;
+            var constant = constants.get(guardedArgument.constantIndex);
+            var deriveCheck = MethodHandles.insertArguments(DERIVE_CHECK, 1, type, guardedArgument.function, constant)
+                .asType(methodType(boolean.class, type));
+            var test = MethodHandles.dropArguments(deriveCheck, 0, target.type().parameterList().subList(0, guardedArgument.position));
+            var fallback = guardedArgument.kind == GuardedArgument.Kind.MONOMORPHIC?
+                globalFallback:
+                /*new InliningCacheCallSite(globalFallback.type(), guardedArgument, arguments, constants, linker, likageType, globalFallback*/
+                new RootCallSite(methodType, parameters, linker).dynamicInvoker();
+            target = MethodHandles.guardWithTest(test, target, fallback);
+          }
+          case RequiredArgument requiredArgument -> {
+            var type = requiredArgument.type;
+            var requireConstant = MethodHandles.insertArguments(REQUIRE_CONSTANT, 1, type, requiredArgument.function, requiredArgument.constant)
                 .asType(methodType(type, type));
-            target = MethodHandles.filterArguments(target, requireCheckArgument.position, requireConstant);
+            target = MethodHandles.filterArguments(target, requiredArgument.position, requireConstant);
           }
-          case IgnoreArgument ignoreArgument -> {
-            target = MethodHandles.dropArguments(target, ignoreArgument.position, ignoreArgument.type);
-          }
-          default -> {}
+          case ValueArgument __ -> {}
         }
       }
       return target;
     }
 
     private Object fallback(Object[] args) throws Throwable {
+      System.err.println("fallback values " + Arrays.toString(args));
+
       var analysisResult = argumentAnalysis(args, parameters, type());
       var arguments = analysisResult.arguments;
       var constants = analysisResult.constants;
       var values = analysisResult.values;
-      var targetType = analysisResult.targetType;
+      var linkageType = analysisResult.linkageType;
 
-      var linkerTarget = link(linker, constants, targetType);
-      var target = dropValuesAndRequireConstants(arguments,
-          installGuards(arguments, constants, linkerTarget));
+      var linkerTarget = link(linker, constants, linkageType);
+      var target = dropValuesAndInstallGuards(parameters, arguments, constants, linker, type(), linkerTarget, globalFallback);
       setTarget(target);
 
       return linkerTarget.invokeWithArguments(values);
     }
   }
-
-  private static final class InliningCacheCallSite extends MutableCallSite {
-    private static final MethodHandle FALLBACK;
-    static {
-      var lookup = MethodHandles.lookup();
-      try {
-        FALLBACK = lookup.findVirtual(InliningCacheCallSite.class, "fallback", methodType(MethodHandle.class, Object.class));
-      } catch (NoSuchMethodException | IllegalAccessException e) {
-        throw new AssertionError(e);
-      }
-    }
-
-    private final GuardedArgument guardedArgument;
-    private final List<Object> constants;
-    private final Linker linker;
-
-    public InliningCacheCallSite(MethodType type, GuardedArgument guardedArgument, List<Object> constants, Linker linker) {
-      super(type);
-      this.guardedArgument = guardedArgument;
-      this.constants = constants;
-      this.linker = linker;
-      var fallback = FALLBACK.bindTo(this)
-          .asType(methodType(MethodHandle.class, type.parameterType(guardedArgument.valueIndex)));
-      fallback = MethodHandles.dropArguments(fallback, 0, type.parameterList().subList(0, guardedArgument.valueIndex));
-      setTarget(MethodHandles.foldArguments(MethodHandles.exactInvoker(type), fallback));
-    }
-
-    private MethodHandle fallback(Object receiver) {
-      var type = guardedArgument.type;
-      var constant = guardedArgument.function.computeConstant(type, receiver);
-      var constants = new ArrayList<>(this.constants);
-      constants.set(guardedArgument.constantIndex, constant);
-
-      var target = link(linker, List.copyOf(constants), type());
-
-      var deriveCheck = MethodHandles.insertArguments(RootCallSite.DERIVE_CHECK, 1, type, guardedArgument.function, constant)
-          .asType(methodType(boolean.class, type));
-      var test = MethodHandles.dropArguments(deriveCheck, 0, type().parameterList().subList(0, guardedArgument.valueIndex));
-      var guard = MethodHandles.guardWithTest(test,
-          target,
-          new InliningCacheCallSite(type(), guardedArgument, constants, linker).dynamicInvoker());
-      setTarget(guard);
-
-      return target;
-    }
-  }
-
 
   /**
    * Rethrow any throwable without the compiler considering as a checked exception.
