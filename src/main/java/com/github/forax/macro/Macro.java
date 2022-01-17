@@ -82,7 +82,7 @@ public class Macro {
 
   private enum ValueArgument implements Argument { INSTANCE }
   private record IgnoredArgument(Class<?> type, int position) implements Argument { }
-  private record GuardedArgument(Class<?> type, int position, boolean dropValue, int constantIndex, int valueIndex, ProjectionFunction function, Kind kind) implements Argument {
+  private record GuardedArgument(Class<?> type, int position, boolean dropValue, ProjectionFunction function, Object constant, Kind kind) implements Argument {
     enum Kind { MONOMORPHIC, POLYMORPHIC }
   }
   private record RequiredArgument(Class<?> type, int position, boolean dropValue, ProjectionFunction function, Object constant) implements Argument { }
@@ -112,8 +112,6 @@ public class Macro {
           yield ValueArgument.INSTANCE;
         }
         case ConstantParameter constantParameter -> {
-          var constantIndex = constants.size();
-          var valueIndex = values.size();
           var constant = constantParameter.function().computeConstant(type, arg);
           constants.add(constant);
           if (!constantParameter.dropValue()) {
@@ -126,7 +124,7 @@ public class Macro {
                 constantParameter.function(), constant);
           }
           yield new GuardedArgument(type, i, constantParameter.dropValue(),
-              constantIndex, valueIndex, constantParameter.function(),
+              constantParameter.function(), constant,
               constantParameter.policy() == ConstantPolicy.RELINK ?
                   GuardedArgument.Kind.MONOMORPHIC:
                   GuardedArgument.Kind.POLYMORPHIC);
@@ -227,8 +225,7 @@ public class Macro {
           case IgnoredArgument __ -> {}
           case GuardedArgument guardedArgument -> {
             var type = guardedArgument.type;
-            var constant = constants.get(guardedArgument.constantIndex);
-            var deriveCheck = MethodHandles.insertArguments(DERIVE_CHECK, 1, type, guardedArgument.function, constant)
+            var deriveCheck = MethodHandles.insertArguments(DERIVE_CHECK, 1, type, guardedArgument.function, guardedArgument.constant)
                 .asType(methodType(boolean.class, type));
             var test = MethodHandles.dropArguments(deriveCheck, 0, target.type().parameterList().subList(0, guardedArgument.position));
             var fallback = guardedArgument.kind == GuardedArgument.Kind.MONOMORPHIC?
