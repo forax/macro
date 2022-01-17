@@ -64,7 +64,7 @@ public class MacroTest {
         }
 
         var mh = Macro.createMH(methodType(Object.class, Object.class, Object.class),
-            List.of(MacroParameter.CONSTANT_CLASS.monomorphic(), MacroParameter.VALUE),
+            List.of(MacroParameter.CONSTANT_CLASS.relink(), MacroParameter.VALUE),
             (constants, type) -> lookup.findVirtual((Class<?>) constants.get(0), name, methodType(returnType, long.class)).asType(type));
         return new DispatchImpl(mh);
       }
@@ -103,7 +103,7 @@ public class MacroTest {
         }
 
         var mh = Macro.createMH(methodType(returnType, visitorClass, Object.class),
-            List.of(MacroParameter.CONSTANT_CLASS.monomorphic(), MacroParameter.CONSTANT_CLASS.polymorphic()),
+            List.of(MacroParameter.CONSTANT_CLASS.relink(), MacroParameter.CONSTANT_CLASS.polymorphic()),
             (constants, type) -> {
                var visitorType = (Class<?>) constants.get(0);
                var elementType = (Class<?>) constants.get(1);

@@ -1,8 +1,8 @@
 package com.github.forax.macro;
 
 import com.github.forax.macro.MacroParameter.ConstantParameter;
-import com.github.forax.macro.MacroParameter.ConstantParameter.CacheKind;
-import com.github.forax.macro.MacroParameter.ConstantParameter.DeriveFunction;
+import com.github.forax.macro.MacroParameter.ConstantParameter.ConstantPolicy;
+import com.github.forax.macro.MacroParameter.ConstantParameter.ProjectionFunction;
 import com.github.forax.macro.MacroParameter.IgnoreParameter;
 import com.github.forax.macro.MacroParameter.ValueParameter;
 
@@ -13,21 +13,67 @@ import java.lang.invoke.MutableCallSite;
 import java.lang.invoke.WrongMethodTypeException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 import static java.lang.invoke.MethodType.methodType;
+import static java.util.Objects.requireNonNull;
 
+/**
+ * A way to defines macro at runtime in Java.
+ *
+ * A macro is a method that pre-compute a list of constants from some the arguments and ask a linker
+ * to provide a method handle from the list of constants to be called with the resting arguments.
+ *
+ * <pre>
+ * mh(arg1, arg2, arg3) + macro(param1, param2, param3) -> linker(const1, const2)(arg2, arg3)
+ * </pre>
+ *
+ * The {@link MacroParameter macro parameters} describes how to extract a constant from an argument,
+ * how to react if subsequent calls found new constants and if the argument are used or dropped
+ * by the method handle retuend by the linker.
+ *
+ * @see #createMH(MethodType, List, Linker)
+ */
 public class Macro {
-  interface Linker {
-    MethodHandle link(List<Object> constants, MethodType methodType) throws ReflectiveOperationException;
+  /**
+   * Called by the macro system with the constants and the method handle type
+   * to get a method handle implementing the behavior.
+   */
+  public interface Linker {
+    /**
+     * This method is called by the macro system to find the method handle
+     * to execute with the arguments.
+     *
+     * @param constants the constants gather from the arguments.
+     * @param methodType the method type that must be the type of the returned method handle
+     * @return a method handle
+     *
+     * @throws ClassNotFoundException if a class is not found
+     * @throws IllegalAccessException if access is not possible
+     * @throws InstantiationException if instantiation is not possible
+     * @throws NoSuchFieldException if no field is found
+     * @throws NoSuchMethodException if no method is found
+     */
+    MethodHandle apply(List<Object> constants, MethodType methodType)
+        throws ClassNotFoundException, IllegalAccessException, InstantiationException,
+               NoSuchFieldException, NoSuchMethodException;
   }
 
+  /**
+   * Creates a method handle conforming to the method type taken as parameter which
+   * separate  the constant arguments from the other arguments and call the linker
+   * one or more time with the constant arguments.
+   *
+   * @param methodType a method type
+   * @param parameters the macro parameters
+   * @param linker the linker that will be called with the constant to get the corresponding method handles
+   * @return a method handle
+   */
   public static MethodHandle createMH(MethodType methodType,
                                       List<? extends MacroParameter> parameters,
                                       Linker linker) {
-    Objects.requireNonNull(methodType, "targetType is null");
-    Objects.requireNonNull(parameters, "parameters is null");
-    Objects.requireNonNull(linker, "linker is null");
+    requireNonNull(methodType, "targetType is null");
+    requireNonNull(parameters, "parameters is null");
+    requireNonNull(linker, "linker is null");
     return new RootCallSite(methodType, List.copyOf(parameters), linker).dynamicInvoker();
   }
 
@@ -35,10 +81,10 @@ public class Macro {
 
   private enum ValueArgument implements Argument { INSTANCE }
   private record IgnoreArgument(Class<?> type, int position) implements Argument { }
-  private record GuardedArgument(int position, boolean dropValue, Class<?> type, int constantIndex, int valueIndex, DeriveFunction function, Kind kind) implements Argument {
+  private record GuardedArgument(int position, boolean dropValue, Class<?> type, int constantIndex, int valueIndex, ProjectionFunction function, Kind kind) implements Argument {
     enum Kind { MONOMORPHIC, POLYMORPHIC }
   }
-  private record RequireCheckArgument(int position, boolean dropValue, Class<?> type, DeriveFunction function, Object constant) implements Argument { }
+  private record RequireCheckArgument(int position, boolean dropValue, Class<?> type, ProjectionFunction function, Object constant) implements Argument { }
 
   private record AnalysisResult(List<Argument> arguments, List<Object> constants, List<Object> values, MethodType targetType) {
     private AnalysisResult {
@@ -65,8 +111,8 @@ public class Macro {
           yield ValueArgument.INSTANCE;
         }
         case ConstantParameter constantParameter -> {
-          var constant = constantParameter.function().derive(type, arg);
-          if (constantParameter.cacheKind() == CacheKind.CHECKED) {
+          var constant = constantParameter.function().computeConstant(type, arg);
+          if (constantParameter.policy() == ConstantPolicy.ERROR) {
             constants.add(constant);
             yield new RequireCheckArgument(i, constantParameter.dropValue(), type,
                 constantParameter.function(), constant);
@@ -80,7 +126,7 @@ public class Macro {
 
           yield new GuardedArgument(i, constantParameter.dropValue(), type,
               constantIndex, valueIndex, constantParameter.function(),
-              constantParameter.cacheKind() == CacheKind.MONOMORPHIC?
+              constantParameter.policy() == ConstantPolicy.RELINK ?
                   GuardedArgument.Kind.MONOMORPHIC:
                   GuardedArgument.Kind.POLYMORPHIC);
         }
@@ -90,14 +136,37 @@ public class Macro {
     return new AnalysisResult(arguments, constants, values, methodType(methodType.returnType(), valueTypes));
   }
 
+  private static MethodHandle link(Linker linker, List<Object> constants, MethodType targetType) {
+    MethodHandle target;
+    try {
+      target = linker.apply(constants, targetType);
+    } catch (ClassNotFoundException e) {
+      throw (NoClassDefFoundError) new NoClassDefFoundError().initCause(e);
+    } catch (IllegalAccessException e) {
+      throw (IllegalAccessError) new IllegalAccessError().initCause(e);
+    } catch (InstantiationException e) {
+      throw (InstantiationError) new InstantiationError().initCause(e);
+    } catch (NoSuchFieldException e) {
+      throw (NoSuchFieldError) new NoSuchFieldError().initCause(e);
+    } catch (NoSuchMethodException e) {
+      throw (NoSuchMethodError) new NoSuchMethodError().initCause(e);
+    }
+
+    requireNonNull(target, "linker return value is null");
+    if (!target.type().equals(targetType)) {
+      throw new WrongMethodTypeException("linker return value as the wrong type");
+    }
+    return target;
+  }
+
   private static final class RootCallSite extends MutableCallSite {
     private static final MethodHandle FALLBACK, DERIVE_CHECK, REQUIRE_CONSTANT;
     static {
       var lookup = MethodHandles.lookup();
       try {
         FALLBACK = lookup.findVirtual(RootCallSite.class, "fallback", methodType(Object.class, Object[].class));
-        DERIVE_CHECK = lookup.findStatic(RootCallSite.class, "derivedCheck", methodType(boolean.class, Object.class, Class.class, DeriveFunction.class, Object.class));
-        REQUIRE_CONSTANT = lookup.findStatic(RootCallSite.class, "requireConstant", methodType(void.class, Object.class, Class.class, DeriveFunction.class, Object.class));
+        DERIVE_CHECK = lookup.findStatic(RootCallSite.class, "derivedCheck", methodType(boolean.class, Object.class, Class.class, ProjectionFunction.class, Object.class));
+        REQUIRE_CONSTANT = lookup.findStatic(RootCallSite.class, "requireConstant", methodType(void.class, Object.class, Class.class, ProjectionFunction.class, Object.class));
       } catch (NoSuchMethodException | IllegalAccessException e) {
        throw new AssertionError(e);
       }
@@ -116,32 +185,17 @@ public class Macro {
       setTarget(fallback);
     }
 
-    private static boolean derivedCheck(Object arg, Class<?> type, DeriveFunction function, Object constant) {
-      return function.derive(type, arg) == constant;
+    private static boolean derivedCheck(Object arg, Class<?> type, ProjectionFunction function, Object constant) {
+      return function.computeConstant(type, arg) == constant;
     }
 
-    private static void requireConstant(Object arg, Class<?> type, DeriveFunction function, Object constant) {
-      if (function.derive(type, arg) != constant) {
+    private static void requireConstant(Object arg, Class<?> type, ProjectionFunction function, Object constant) {
+      if (function.computeConstant(type, arg) != constant) {
         throw new IllegalStateException("constant violation for argument " + arg);
       }
     }
 
-    private Object fallback(Object[] args) throws ReflectiveOperationException /*FIXME*/, Throwable {
-      var analysisResult = argumentAnalysis(args, parameters, type());
-      var arguments = analysisResult.arguments;
-      var constants = analysisResult.constants;
-      var values = analysisResult.values;
-      var targetType = analysisResult.targetType;
-
-      var target = linker.link(constants, targetType);
-      Objects.requireNonNull(target, "linker return value is null");
-      if (!target.type().equals(targetType)) {
-        throw new WrongMethodTypeException("linker return value as the wrong type");
-      }
-
-      var result = target.invokeWithArguments(values);
-
-      // deal with cache arguments
+    private MethodHandle installGuards(List<Argument> arguments, List<Object> constants, MethodHandle target) {
       for(var argument: arguments) {
         switch(argument) {
           case GuardedArgument guardedArgument -> {
@@ -158,14 +212,14 @@ public class Macro {
           default -> {}
         }
       }
+      return target;
+    }
 
-      // deal with constant arguments and ignore arguments
+    private static MethodHandle dropValuesAndRequireConstants(List<Argument> arguments, MethodHandle target) {
       for(var argument: arguments) {
         switch (argument) {
-          case GuardedArgument guardedArgument -> {
-            if (guardedArgument.dropValue) {
-              target = MethodHandles.dropArguments(target, guardedArgument.position, guardedArgument.type);
-            }
+          case GuardedArgument guardedArgument && guardedArgument.dropValue-> {
+            target = MethodHandles.dropArguments(target, guardedArgument.position, guardedArgument.type);
           }
           case RequireCheckArgument requireCheckArgument -> {
             var type = requireCheckArgument.type;
@@ -182,9 +236,22 @@ public class Macro {
           default -> {}
         }
       }
+      return target;
+    }
 
+    private Object fallback(Object[] args) throws Throwable {
+      var analysisResult = argumentAnalysis(args, parameters, type());
+      var arguments = analysisResult.arguments;
+      var constants = analysisResult.constants;
+      var values = analysisResult.values;
+      var targetType = analysisResult.targetType;
+
+      var linkerTarget = link(linker, constants, targetType);
+      var target = dropValuesAndRequireConstants(arguments,
+          installGuards(arguments, constants, linkerTarget));
       setTarget(target);
-      return result;
+
+      return linkerTarget.invokeWithArguments(values);
     }
   }
 
@@ -214,12 +281,13 @@ public class Macro {
       setTarget(MethodHandles.foldArguments(MethodHandles.exactInvoker(type), fallback));
     }
 
-    private MethodHandle fallback(Object receiver) throws ReflectiveOperationException {
+    private MethodHandle fallback(Object receiver) {
       var type = guardedArgument.type;
-      var constant = guardedArgument.function.derive(type, receiver);
+      var constant = guardedArgument.function.computeConstant(type, receiver);
       var constants = new ArrayList<>(this.constants);
       constants.set(guardedArgument.constantIndex, constant);
-      var target = linker.link(List.copyOf(constants), type());
+
+      var target = link(linker, List.copyOf(constants), type());
 
       var deriveCheck = MethodHandles.insertArguments(RootCallSite.DERIVE_CHECK, 1, type, guardedArgument.function, constant)
           .asType(methodType(boolean.class, type));
@@ -234,9 +302,18 @@ public class Macro {
   }
 
 
+  /**
+   * Rethrow any throwable without the compiler considering as a checked exception.
+   *
+   * @param cause a throwable to throw
+   * @return nothing typed as an AssertionError so rethrow can be a parameter of @code throw}.
+   */
+  public static AssertionError rethrow(Throwable cause) {
+    throw rethrow0(cause);
+  }
 
-  @SuppressWarnings("unchecked")   // very wrong but works
-  public static <T extends Throwable> AssertionError rethrow(Throwable cause) throws T {
+  @SuppressWarnings("unchecked")   // allow to erase the exception type, see above
+  private static <T extends Throwable> AssertionError rethrow0(Throwable cause) throws T {
     throw (T) cause;
   }
 }
