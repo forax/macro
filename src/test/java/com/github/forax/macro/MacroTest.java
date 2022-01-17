@@ -67,10 +67,6 @@ public class MacroTest {
         var mh = Macro.createMH(methodType(Object.class, Object.class, String.class, MethodType.class, Object[].class),
             List.of(MacroParameter.CONSTANT_CLASS.polymorphic(), MacroParameter.CONSTANT_VALUE, MacroParameter.CONSTANT_VALUE, MacroParameter.VALUE),
             (constants, type) -> {
-
-              System.err.println("in linker: type " + type);
-              System.err.println("in linker: constants " + constants);
-
               var receiverClass = (Class<?>) constants.get(0);
               var name = (String) constants.get(1);
               var methodType = (MethodType) constants.get(2);
