@@ -104,8 +104,8 @@ public class Macro {
       var arg = args[i];
       var type = methodType.parameterType(i);
       var argument = switch (parameter) {
-        case IgnoreParameter ignoreParameter -> new IgnoredArgument(type, i);
-        case ValueParameter valueParameter -> {
+        case IgnoreParameter __ -> new IgnoredArgument(type, i);
+        case ValueParameter __ -> {
           values.add(arg);
           valueTypes.add(type);
           yield ValueArgument.INSTANCE;
@@ -165,15 +165,15 @@ public class Macro {
 
     private final List<MacroParameter> parameters;
     private final Linker linker;
-    private final MethodHandle globalFallback;
+    private final MethodHandle fallback;
 
     public RootCallSite(MethodType type, List<MacroParameter> parameters, Linker linker) {
       super(type);
       this.parameters = parameters;
       this.linker = linker;
-      var globalFallback = FALLBACK.bindTo(this).asCollector(Object[].class, type.parameterCount()).asType(type);
-      this.globalFallback = globalFallback;
-      setTarget(globalFallback);
+      var fallback = FALLBACK.bindTo(this).asCollector(Object[].class, type.parameterCount()).asType(type);
+      this.fallback = fallback;
+      setTarget(fallback);
     }
 
     private static boolean derivedCheck(Object arg, Class<?> type, ProjectionFunction function, Object constant) {
@@ -187,9 +187,8 @@ public class Macro {
       return arg;
     }
 
-    private static MethodHandle dropValuesAndInstallGuards(List<MacroParameter> parameters, List<Argument> arguments, List<Object> constants,
-                                                           Linker linker,
-                                                           MethodType methodType, MethodHandle target, MethodHandle globalFallback) {
+    private MethodHandle dropValuesAndInstallGuards(List<Argument> arguments,
+                                                    MethodType methodType, MethodHandle target) {
 
       // take care of the dropped values
       for(var argument: arguments) {
@@ -222,7 +221,7 @@ public class Macro {
                 .asType(methodType(boolean.class, type));
             var test = dropArguments(deriveCheck, 0, target.type().parameterList().subList(0, guardedArgument.position));
             var fallback = guardedArgument.policy == ConstantPolicy.RELINK?
-                globalFallback:
+                this.fallback :
                 new RootCallSite(methodType, parameters, linker).dynamicInvoker();
             target = MethodHandles.guardWithTest(test, target, fallback);
           }
@@ -240,7 +239,7 @@ public class Macro {
       var linkageType = analysisResult.linkageType;
 
       var linkerTarget = link(linker, constants, linkageType);
-      var target = dropValuesAndInstallGuards(parameters, arguments, constants, linker, type(), linkerTarget, globalFallback);
+      var target = dropValuesAndInstallGuards(arguments, type(), linkerTarget);
       setTarget(target);
 
       return linkerTarget.invokeWithArguments(values);
