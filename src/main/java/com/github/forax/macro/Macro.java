@@ -6,10 +6,13 @@ import com.github.forax.macro.MacroParameter.ConstantParameter.ProjectionFunctio
 import com.github.forax.macro.MacroParameter.IgnoreParameter;
 import com.github.forax.macro.MacroParameter.ValueParameter;
 
+import java.io.Serializable;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodHandles.Lookup;
 import java.lang.invoke.MethodType;
 import java.lang.invoke.MutableCallSite;
+import java.lang.invoke.SerializedLambda;
 import java.lang.invoke.WrongMethodTypeException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -77,6 +80,9 @@ public class Macro {
     requireNonNull(methodType, "linkageType is null");
     requireNonNull(parameters, "parameters is null");
     requireNonNull(linker, "linker is null");
+    if (methodType.parameterCount() != parameters.size()) {
+      throw new IllegalArgumentException("methodType.parameterCount() != parameters.size()");
+    }
     return new RootCallSite(methodType, List.copyOf(parameters), linker).dynamicInvoker();
   }
 
@@ -259,5 +265,32 @@ public class Macro {
   @SuppressWarnings("unchecked")   // allow to erase the exception type, see above
   private static <T extends Throwable> AssertionError rethrow0(Throwable cause) throws T {
     throw (T) cause;
+  }
+
+  /**
+   * Returns a {@code java.lang.invoke.SerializedLambda} from a serializable lambda.
+   * This operation quite slow, so it should not be done in the fast path.
+   *
+   * @param lookup a lookup that can see the lambda
+   * @param lambda a serializable lambda
+   * @return a SerializedLambda object containing all the info about a lambda
+   */
+  public static SerializedLambda crack(Lookup lookup, Object lambda) {
+    if (!(lambda instanceof Serializable)) {
+      throw new IllegalArgumentException("the lambda is not serializable");
+    }
+    MethodHandle writeReplace;
+    try {
+      writeReplace = lookup.findVirtual(lambda.getClass(), "writeReplace", methodType(Object.class));
+    } catch (IllegalAccessException e) {
+      throw (IllegalAccessError) new IllegalAccessError().initCause(e);
+    } catch (NoSuchMethodException e) {
+      throw (NoSuchMethodError) new NoSuchMethodError().initCause(e);
+    }
+    try {
+      return (SerializedLambda) writeReplace.invoke(lambda);
+    } catch (Throwable t) {
+      throw rethrow(t);
+    }
   }
 }

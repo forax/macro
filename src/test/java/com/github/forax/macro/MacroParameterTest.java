@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class MacroParameterTest {
   private static Stream<Arguments> provideArguments() {
@@ -43,7 +44,7 @@ public class MacroParameterTest {
 
               return MethodHandles.empty(methodType);
             });
-    assertEquals(null, mh.invoke(42));
+    assertNull(mh.invoke(42));
   }
 
   @ParameterizedTest
