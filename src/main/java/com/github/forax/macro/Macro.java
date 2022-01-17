@@ -15,6 +15,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import static java.lang.invoke.MethodHandles.dropArguments;
+import static java.lang.invoke.MethodHandles.insertArguments;
 import static java.lang.invoke.MethodType.methodType;
 import static java.util.Objects.requireNonNull;
 
@@ -82,10 +84,7 @@ public class Macro {
 
   private enum ValueArgument implements Argument { INSTANCE }
   private record IgnoredArgument(Class<?> type, int position) implements Argument { }
-  private record GuardedArgument(Class<?> type, int position, boolean dropValue, ProjectionFunction function, Object constant, Kind kind) implements Argument {
-    enum Kind { MONOMORPHIC, POLYMORPHIC }
-  }
-  private record RequiredArgument(Class<?> type, int position, boolean dropValue, ProjectionFunction function, Object constant) implements Argument { }
+  private record GuardedArgument(Class<?> type, int position, boolean dropValue, ProjectionFunction function, Object constant, ConstantPolicy policy) implements Argument { }
 
   private record AnalysisResult(List<Argument> arguments, List<Object> constants, List<Object> values, MethodType linkageType) {
     private AnalysisResult {
@@ -118,16 +117,9 @@ public class Macro {
             values.add(arg);
             valueTypes.add(type);
           }
-
-          if (constantParameter.policy() == ConstantPolicy.ERROR) {
-            yield new RequiredArgument(type, i, constantParameter.dropValue(),
-                constantParameter.function(), constant);
-          }
           yield new GuardedArgument(type, i, constantParameter.dropValue(),
               constantParameter.function(), constant,
-              constantParameter.policy() == ConstantPolicy.RELINK ?
-                  GuardedArgument.Kind.MONOMORPHIC:
-                  GuardedArgument.Kind.POLYMORPHIC);
+              constantParameter.policy());
         }
       };
       arguments.add(argument);
@@ -203,16 +195,11 @@ public class Macro {
       for(var argument: arguments) {
         switch (argument) {
           case IgnoredArgument ignoredArgument -> {
-            target = MethodHandles.dropArguments(target, ignoredArgument.position, ignoredArgument.type);
+            target = dropArguments(target, ignoredArgument.position, ignoredArgument.type);
           }
           case GuardedArgument guardedArgument -> {
             if (guardedArgument.dropValue) {
-              target = MethodHandles.dropArguments(target, guardedArgument.position, guardedArgument.type);
-            }
-          }
-          case RequiredArgument requiredArgument -> {
-            if (requiredArgument.dropValue) {
-              target = MethodHandles.dropArguments(target, requiredArgument.position, requiredArgument.type);
+              target = dropArguments(target, guardedArgument.position, guardedArgument.type);
             }
           }
           case ValueArgument __ -> {}
@@ -225,20 +212,19 @@ public class Macro {
           case IgnoredArgument __ -> {}
           case GuardedArgument guardedArgument -> {
             var type = guardedArgument.type;
-            var deriveCheck = MethodHandles.insertArguments(DERIVE_CHECK, 1, type, guardedArgument.function, guardedArgument.constant)
+            if (guardedArgument.policy == ConstantPolicy.ERROR) {
+              var requireConstant = insertArguments(REQUIRE_CONSTANT, 1, type, guardedArgument.function, guardedArgument.constant)
+                  .asType(methodType(type, type));
+              target = MethodHandles.filterArguments(target, guardedArgument.position, requireConstant);
+              continue;
+            }
+            var deriveCheck = insertArguments(DERIVE_CHECK, 1, type, guardedArgument.function, guardedArgument.constant)
                 .asType(methodType(boolean.class, type));
-            var test = MethodHandles.dropArguments(deriveCheck, 0, target.type().parameterList().subList(0, guardedArgument.position));
-            var fallback = guardedArgument.kind == GuardedArgument.Kind.MONOMORPHIC?
+            var test = dropArguments(deriveCheck, 0, target.type().parameterList().subList(0, guardedArgument.position));
+            var fallback = guardedArgument.policy == ConstantPolicy.RELINK?
                 globalFallback:
-                /*new InliningCacheCallSite(globalFallback.type(), guardedArgument, arguments, constants, linker, likageType, globalFallback*/
                 new RootCallSite(methodType, parameters, linker).dynamicInvoker();
             target = MethodHandles.guardWithTest(test, target, fallback);
-          }
-          case RequiredArgument requiredArgument -> {
-            var type = requiredArgument.type;
-            var requireConstant = MethodHandles.insertArguments(REQUIRE_CONSTANT, 1, type, requiredArgument.function, requiredArgument.constant)
-                .asType(methodType(type, type));
-            target = MethodHandles.filterArguments(target, requiredArgument.position, requireConstant);
           }
           case ValueArgument __ -> {}
         }
