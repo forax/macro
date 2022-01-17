@@ -11,9 +11,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.invoke.MutableCallSite;
 import java.lang.invoke.WrongMethodTypeException;
-import java.lang.reflect.Parameter;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -140,9 +138,6 @@ public class Macro {
   }
 
   private static MethodHandle link(Linker linker, List<Object> constants, MethodType linkageType) {
-
-    System.err.println("link " + constants + " linkageType: " + linkageType);
-
     MethodHandle target;
     try {
       target = linker.apply(constants, linkageType);
@@ -255,8 +250,6 @@ public class Macro {
     }
 
     private Object fallback(Object[] args) throws Throwable {
-      System.err.println("fallback values " + Arrays.toString(args));
-
       var analysisResult = argumentAnalysis(args, parameters, type());
       var arguments = analysisResult.arguments;
       var constants = analysisResult.constants;
