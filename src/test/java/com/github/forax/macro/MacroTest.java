@@ -1,6 +1,7 @@
 package com.github.forax.macro;
 
 import com.github.forax.macro.Macro.Linker;
+import com.github.forax.macro.Macro.Parameter;
 import org.junit.jupiter.api.Test;
 
 import java.io.Serializable;
@@ -18,9 +19,9 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-import static com.github.forax.macro.MacroParameter.CONSTANT_CLASS;
-import static com.github.forax.macro.MacroParameter.CONSTANT_VALUE;
-import static com.github.forax.macro.MacroParameter.VALUE;
+import static com.github.forax.macro.Macro.CONSTANT_CLASS;
+import static com.github.forax.macro.Macro.CONSTANT_VALUE;
+import static com.github.forax.macro.Macro.VALUE;
 import static java.lang.invoke.MethodType.methodType;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -37,7 +38,7 @@ public class MacroTest {
       static {
         Lookup lookup = MethodHandles.lookup();
         MH = Macro.createMH(MethodType.methodType(double.class, Foo.class, String.class, int.class),
-            List.of(MacroParameter.VALUE, MacroParameter.CONSTANT_VALUE.polymorphic(), MacroParameter.VALUE),
+            List.of(Macro.VALUE, Macro.CONSTANT_VALUE.polymorphic(), Macro.VALUE),
             (constants, type) -> {
               String name  = (String) constants.get(0);
               return lookup.findVirtual(Foo.class, name, MethodType.methodType(double.class, int.class)).asType(type);
@@ -209,7 +210,7 @@ public class MacroTest {
         return MethodType.methodType(Object.class, parameterTypes);
       }
 
-      private static List<MacroParameter> parameters(int fieldCount) {
+      private static List<Parameter> parameters(int fieldCount) {
         return Stream.concat(
               IntStream.range(0, fieldCount).mapToObj(__ -> CONSTANT_VALUE.polymorphic()), IntStream.range(0, fieldCount).mapToObj(__ -> VALUE)
             ).toList();
@@ -322,7 +323,7 @@ public class MacroTest {
         return MethodType.methodType(Object.class, parameterTypes);
       }
 
-      private static List<MacroParameter> parameters(int fieldCount) {
+      private static List<Parameter> parameters(int fieldCount) {
         return Stream.concat(
             IntStream.range(0, fieldCount).mapToObj(__ -> CONSTANT_VALUE.polymorphic()), IntStream.range(0, fieldCount).mapToObj(__ -> VALUE)
         ).toList();
@@ -439,7 +440,7 @@ public class MacroTest {
         return MethodType.methodType(Object.class, parameterTypes);
       }
 
-      private static List<MacroParameter> parameters(int fieldCount) {
+      private static List<Parameter> parameters(int fieldCount) {
         return Stream.concat(
             IntStream.range(0, fieldCount).mapToObj(__ -> CONSTANT_VALUE.polymorphic()), IntStream.range(0, fieldCount).mapToObj(__ -> VALUE)
         ).toList();

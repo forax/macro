@@ -1,8 +1,8 @@
 package com.github.forax.macro;
 
-import com.github.forax.macro.MacroParameter.ConstantParameter;
-import com.github.forax.macro.MacroParameter.ConstantParameter.ConstantPolicy;
-import com.github.forax.macro.MacroParameter.ConstantParameter.ProjectionFunction;
+import com.github.forax.macro.Macro.ConstantParameter;
+import com.github.forax.macro.Macro.ConstantPolicy;
+import com.github.forax.macro.Macro.ProjectionFunction;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -15,7 +15,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-public class MacroParameterTest {
+public class ParameterTest {
   private static Stream<Arguments> provideArguments() {
     return Stream.of(0)
         .mapMulti((__, consumer) -> {

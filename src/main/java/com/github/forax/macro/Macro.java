@@ -1,11 +1,5 @@
 package com.github.forax.macro;
 
-import com.github.forax.macro.MacroParameter.ConstantParameter;
-import com.github.forax.macro.MacroParameter.ConstantParameter.ConstantPolicy;
-import com.github.forax.macro.MacroParameter.ConstantParameter.ProjectionFunction;
-import com.github.forax.macro.MacroParameter.IgnoreParameter;
-import com.github.forax.macro.MacroParameter.ValueParameter;
-
 import java.io.Serializable;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -33,13 +27,191 @@ import static java.util.Objects.requireNonNull;
  * mh(arg1, arg2, arg3) + macro(param1, param2, param3) -> linker(const1, const2)(arg2, arg3)
  * </pre>
  *
- * The {@link MacroParameter macro parameters} describes how to extract a constant from an argument,
+ * The {@link Parameter macro parameters} describes how to extract a constant from an argument,
  * how to react if subsequent calls found new constants and if the argument are used or dropped
  * by the method handle retuend by the linker.
  *
  * @see #createMH(MethodType, List, Linker)
  */
 public class Macro {
+  /**
+   * Describe the parameters of a function call of a macro.
+   * Instead of a classical function call where all arguments are sent to the function, a macro separate the arguments
+   * in two categories, the constants and the values, the constants are extracted and a linker is called
+   * to provide a method handle that will be called with the values.
+   *
+   * The fact that the constant are computed earlier than the arguments allows data structures and
+   * method linkage to be computed resulting in a code more efficient than using reflection.
+   *
+   * {@link Macro#createMH(MethodType, List, Linker)} create a macro, as a method handle,
+   * from a method type, a list of parameters and a {@link Linker}.
+   *
+   * There are 3 kinds of parameters
+   * <ul>
+   *   <li>{@link ConstantParameter a constant parameter}, a parameter from which a
+   *       {@link ConstantParameter#function() constant can be extracted},
+   *       the argument itself will be @link {@link ConstantParameter#dropValue() kept or not} and
+   *       {@link ConstantParameter#policy() one or more constants} can be extracted from a parameter.
+   *   <li>{@link ValueParameter a value parameter}, a simple argument.
+   *   <li>{@link IgnoreParameter an ignore parameter}, the corresponding argument is ignored.
+   * </ul>
+   *
+   * The {@link Linker} defines the function called with the constants to provide the method handle
+   * that will be called with the argument.
+   *
+   * @see Macro
+   */
+  public sealed interface Parameter {}
+
+  /**
+   * A parameter indicating that the corresponding argument is a constant.
+   */
+  public record ConstantParameter(ProjectionFunction function, boolean dropValue, ConstantPolicy policy) implements Parameter {
+    /**
+     * Creates a constant parameter with a projection function to compute the constant from a value,
+     * a boolean indicating if the value should be dropped ot not and
+     * an enum indicating the operation to do if there are different values for the constant
+     * ({@link ConstantPolicy#ERROR}: emits an error, {@link ConstantPolicy#RELINK}: calls the linker again,
+     * {@link ConstantPolicy#POLYMORPHIC}:install a polymorphic inlining cache).
+     *
+     * @param function the projection function, can be a lambda, {@link ProjectionFunction#VALUE} or
+     *                 {@link ProjectionFunction#GET_CLASS}
+     * @param dropValue a boolean indicating if the value should be dropped given it appears as a constant
+     * @param policy policy when there are several constants for a parameter
+     */
+    public ConstantParameter {
+      requireNonNull(function);
+      requireNonNull(policy);
+    }
+
+    /**
+     * Returns a new constant parameter using the {@link ConstantPolicy#ERROR}
+     * @return a new constant parameter using the {@link ConstantPolicy#ERROR}
+     */
+    public ConstantParameter error() {
+      return new ConstantParameter(function, dropValue, ConstantPolicy.ERROR);
+    }
+
+    /**
+     * Returns a new constant parameter using the {@link ConstantPolicy#RELINK}
+     * @return a new constant parameter using the {@link ConstantPolicy#RELINK}
+     */
+    public ConstantParameter relink() {
+      return new ConstantParameter(function, dropValue, ConstantPolicy.RELINK);
+    }
+
+    /**
+     * Returns a new constant parameter using the {@link ConstantPolicy#POLYMORPHIC}
+     * @return a new constant parameter using the {@link ConstantPolicy#POLYMORPHIC}
+     */
+    public ConstantParameter polymorphic() {
+      return new ConstantParameter(function, dropValue, ConstantPolicy.POLYMORPHIC);
+    }
+
+    /**
+     * Returns a new constant parameter that drop/retain the value of the constant
+     * If the value is dropped it will not be an argument of the method handle returned
+     * by the {@link Linker}
+     *
+     * @param dropValue drop or retain the value of a constant
+     * @return a new constant parameter that drop/retain the value of the constant
+     */
+    public ConstantParameter dropValue(boolean dropValue) {
+      return new ConstantParameter(function, dropValue, policy);
+    }
+  }
+
+  /**
+   * The projection function used to extract the constant from a value.
+   */
+  @FunctionalInterface
+  public interface ProjectionFunction {
+    /**
+     * Returns a constant from the value and its declared type.
+     *
+     * @param declaredType the declared type of the argument
+     * @param value the value of the argument
+     * @return a constant
+     */
+    Object computeConstant(Class<?> declaredType, Object value);
+
+    /**
+     * A projection function that returns the value as constant.
+     */
+    ProjectionFunction VALUE = (declaredType, value) -> value;
+
+    /**
+     * A projection function that return the class of the value as a constant.
+     */
+    ProjectionFunction GET_CLASS = (declaredType, value) -> declaredType.isPrimitive()? declaredType: value.getClass();
+  }
+
+  /**
+   * The behavior when the macro system detects that a constant has several different values.
+   */
+  public enum ConstantPolicy {
+    /**
+     * Emits an exception
+     */
+    ERROR,
+
+    /**
+     * Calls the linker again, trashing all previous computation
+     */
+    RELINK,
+
+    /**
+     * Use a polymorphic inlining cache to remember all the linkages of the constants
+     */
+    POLYMORPHIC
+  }
+
+  /**
+   * A parameter indicating that the corresponding argument should be ignored.
+   */
+  public enum IgnoreParameter implements Parameter {
+    /**
+     * The singleton instance.
+     *
+     * @see #IGNORE
+     */
+    INSTANCE
+  }
+
+  /**
+   * A parameter indicating that the corresponding argument is just a value (not a constant).
+   */
+  public enum ValueParameter implements Parameter {
+    /**
+     * The singleton instance.
+     *
+     * @see #VALUE
+     */
+    INSTANCE
+  }
+
+  /**
+   * A constant parameter that defines the value of the argument as a constant,
+   * drop the value and throws an exception if the parameter see several values
+   */
+  public static final ConstantParameter CONSTANT_VALUE = new ConstantParameter(ProjectionFunction.VALUE, true, ConstantPolicy.ERROR);
+
+  /**
+   * A constant parameter that defines the class of the argument as a constant,
+   * the value is not dropped and throws an exception if the parameter see several classes
+   */
+  public static final ConstantParameter CONSTANT_CLASS = new ConstantParameter(ProjectionFunction.GET_CLASS, false, ConstantPolicy.ERROR);
+
+  /**
+   * A value parameter
+   */
+  public static final ValueParameter VALUE = ValueParameter.INSTANCE;
+
+  /**
+   * An ignored parameter
+   */
+  public static final IgnoreParameter IGNORE = IgnoreParameter.INSTANCE;
+
   /**
    * Called by the macro system with the constants and the method handle type
    * to get a method handle implementing the behavior.
@@ -75,7 +247,7 @@ public class Macro {
    * @return a method handle
    */
   public static MethodHandle createMH(MethodType methodType,
-                                      List<? extends MacroParameter> parameters,
+                                      List<? extends Parameter> parameters,
                                       Linker linker) {
     requireNonNull(methodType, "linkageType is null");
     requireNonNull(parameters, "parameters is null");
@@ -100,7 +272,7 @@ public class Macro {
     }
   }
 
-  private static AnalysisResult argumentAnalysis(Object[] args, List<MacroParameter> parameters, MethodType methodType) {
+  private static AnalysisResult argumentAnalysis(Object[] args, List<Parameter> parameters, MethodType methodType) {
     var arguments = new ArrayList<Argument>();
     var constants = new ArrayList<>();
     var values = new ArrayList<>();
@@ -169,11 +341,11 @@ public class Macro {
       }
     }
 
-    private final List<MacroParameter> parameters;
+    private final List<Parameter> parameters;
     private final Linker linker;
     private final MethodHandle fallback;
 
-    public RootCallSite(MethodType type, List<MacroParameter> parameters, Linker linker) {
+    public RootCallSite(MethodType type, List<Parameter> parameters, Linker linker) {
       super(type);
       this.parameters = parameters;
       this.linker = linker;
