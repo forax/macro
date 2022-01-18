@@ -441,7 +441,7 @@ public class Macro {
 
   /**
    * Returns a {@code java.lang.invoke.SerializedLambda} from a serializable lambda.
-   * This operation quite slow, so it should not be done in the fast path.
+   * This operation quite slow, so it should not be done in a fast path.
    *
    * @param lookup a lookup that can see the lambda
    * @param lambda a serializable lambda
