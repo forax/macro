@@ -249,13 +249,48 @@ public class Macro {
   public static MethodHandle createMH(MethodType methodType,
                                       List<? extends Parameter> parameters,
                                       Linker linker) {
+    return createMHControl(methodType, parameters, linker).createMH();
+  }
+
+  /**
+   * An interface that can create a method handle from the parameters of
+   * {@link #createMHControl(MethodType, List, Linker)} and reset all created method handles to their initial state.
+   */
+  public interface MethodHandleControl {
+    /**
+     * Creates a method handle from the parameter of {@link #createMHControl(MethodType, List, Linker)}.
+     * @return a new method handle
+     */
+    MethodHandle createMH();
+
+    /**
+     * Deoptimize all method handles created with {@link #createMH()}.
+     */
+    void deoptimize();
+  }
+
+  /**
+   * Return a method handle control which provides
+   * <ol>
+   *  <li>a method {@link MethodHandleControl#createMH()} that create a method handle from a recipe.
+   *  <li>a method {@link MethodHandleControl#deoptimize()} that can reset the method handle to its initial state
+   * </ol>
+   *
+   * @param methodType a method type
+   * @param parameters the macro parameters
+   * @param linker the linker that will be called with the constant to get the corresponding method handles
+   * @return a method handle
+   */
+  public static MethodHandleControl createMHControl(MethodType methodType,
+                                                    List<? extends Parameter> parameters,
+                                                    Linker linker) {
     requireNonNull(methodType, "linkageType is null");
     requireNonNull(parameters, "parameters is null");
     requireNonNull(linker, "linker is null");
     if (methodType.parameterCount() != parameters.size()) {
       throw new IllegalArgumentException("methodType.parameterCount() != parameters.size()");
     }
-    return new RootCallSite(methodType, List.copyOf(parameters), linker).dynamicInvoker();
+    return new RootCallSite(methodType, List.copyOf(parameters), linker);
   }
 
   private sealed interface Argument { }
@@ -328,7 +363,7 @@ public class Macro {
     return target;
   }
 
-  private static final class RootCallSite extends MutableCallSite {
+  private static final class RootCallSite extends MutableCallSite implements MethodHandleControl {
     private static final MethodHandle FALLBACK, DERIVE_CHECK, REQUIRE_CONSTANT;
     static {
       var lookup = MethodHandles.lookup();
@@ -352,6 +387,17 @@ public class Macro {
       var fallback = FALLBACK.bindTo(this).asCollector(Object[].class, type.parameterCount()).asType(type);
       this.fallback = fallback;
       setTarget(fallback);
+    }
+
+    @Override
+    public MethodHandle createMH() {
+      return dynamicInvoker();
+    }
+
+    @Override
+    public void deoptimize() {
+      setTarget(fallback);
+      MutableCallSite.syncAll(new MutableCallSite[] { this });
     }
 
     private static boolean derivedCheck(Object arg, Class<?> type, ProjectionFunction function, Object constant) {

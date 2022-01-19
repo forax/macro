@@ -3,6 +3,7 @@ package com.github.forax.macro;
 import com.github.forax.macro.example.builder1;
 import com.github.forax.macro.example.builder2;
 import com.github.forax.macro.example.builder3;
+import com.github.forax.macro.example.fmt;
 
 import org.junit.jupiter.api.Test;
 
@@ -20,5 +21,10 @@ public class ExampleTest {
   @Test
   public void builder3() {
     builder3.main(new String[0]);
+  }
+
+  @Test
+  public void fmt() {
+    fmt.main(new String[0]);
   }
 }
