@@ -67,3 +67,13 @@ There are 3 kinds of `Parameter`
 - and a `ValueParameter` to do nothing special on an argument.
   `Macro.VALUE` is the singleton instance of a `ValueParameter`.
 
+
+### More examples
+
+Several examples are available,
+- A builder of record [builder1](src/main/examples/com/github.forax/macro/example/builder1.java),
+  [builder2](src/main/examples/com/github.forax/macro/example/builder2.java) and
+  [builder3](src/main/examples/com/github.forax/macro/example/builder3.java).
+- A string formatter [fmt](src/main/examples/com/github.forax/macro/example/fmt.java) (like `String.format()`).
+- A constant that can be changed [almostconstant](src/main/examples/com/github.forax/macro/example/almostconstant.java).
+
