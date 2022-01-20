@@ -264,7 +264,7 @@ public class Macro {
     MethodHandle createMH();
 
     /**
-     * Deoptimize all method handles created with {@link #createMH()}.
+     * De-optimize all method handles created with {@link #createMH()}.
      */
     void deoptimize();
   }
