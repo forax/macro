@@ -1,5 +1,6 @@
 package com.github.forax.macro;
 
+import com.github.forax.macro.example.almostconstant;
 import com.github.forax.macro.example.builder1;
 import com.github.forax.macro.example.builder2;
 import com.github.forax.macro.example.builder3;
@@ -26,5 +27,10 @@ public class ExampleTest {
   @Test
   public void fmt() {
     fmt.main(new String[0]);
+  }
+
+  @Test
+  public void almostconstant() {
+    almostconstant.main(new String[0]);
   }
 }
