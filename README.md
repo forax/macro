@@ -68,7 +68,68 @@ There are 3 kinds of `Parameter`
   `Macro.VALUE` is the singleton instance of a `ValueParameter`.
 
 
-### More examples
+## How to design an API around the Macro library
+
+Having an API that provides a method handle is nice for a low level API but not super user-friendly because
+`java.lang.invoke.MethodHandle` is not a well known class and it's ergonomics, mostly invoke` or `invokeExact` needs
+the return type to be specified by a cast, and they throw a Throwable which does not play well with the rest of
+the Java code.
+
+There is a workaround to not expose a method handle to the use while keeping the performance, the idea
+is to store the method handle in an unmodifiable field of either a lambda (as a capture parameter) or
+a record (unlike lambda and record, final fields of classes and enum are modifiable by reflection so
+are not considered as trully constant by the VM/JIT).
+
+Exposing the implementation, the lambda or the record is obvously not recommended so we will use an
+interface to hide the impelmentation.
+
+Here is the code template using a lambda
+```java
+interface Foo {
+  String m(Object o, int i);
+  
+  static Foo of(Lookup lookup) {
+    var mh = Macro.createMH(...);
+    return (o, i) -> {
+      try {
+        return (String) mh.invokeExact(o, i);
+      } catch(Throwable t) {
+        throw Macro.rethrow(t);
+      }
+    };
+  }
+}
+```
+
+`Macro.rethrow()` allows to throw any `Throwable`without the compiler seeing it as checked exception.
+This allows to sneak any checked exceptions because it can cause great harm, it should be only use to rethrow
+an exception raised by `invoke()` or `invokeExact()`. 
+
+and the code template using a record
+```java
+interface Foo {
+  String m(Object o, int i);
+  
+  static Foo of(Lookup lookup) {
+    record FooImpl(MethodHandle mh) implements Foo {
+      public String m(Object o, int i) {
+        try {
+          return (String) mh.invokeExact(o, i);
+        } catch(Throwable t) {
+          throw Macro.rethrow(t);
+        }
+      }
+    }
+    var mh = Macro.createMH(...);
+    return new FooImpl(mh);
+  }
+}
+```
+
+With that design, performance will be great if the user store the instance of `Foo` in a `static` `final` field.
+
+
+## More examples
 
 Several examples are available,
 - A record builder [builder1](src/main/examples/com/github.forax/macro/example/builder1.java),
