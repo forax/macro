@@ -9,6 +9,7 @@ import java.lang.invoke.StringConcatException;
 import java.lang.invoke.StringConcatFactory;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.regex.Pattern;
 
 public interface fmt {
@@ -59,10 +60,19 @@ public interface fmt {
     }
   }
 
+  // ---
+
+
+  private static void assertEquals(Object exptected, Object result) {
+    if (!(Objects.equals(exptected, result))) {
+      throw new AssertionError("not equals, " + exptected + " != " + result);
+    }
+  }
+
   Formatter FMT = Formatter.of();
 
   static void main(String[] args){
-    System.out.println(FMT.format("hello %s %d", "FMT", 42));
-    System.out.println(FMT.format("%.2f", 42.0));
+    assertEquals("hello FMT 42", FMT.format("hello %s %d", "FMT", 42));
+    assertEquals("42.00", FMT.format("%.2f", 42.0));
   }
 }
