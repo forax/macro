@@ -14,7 +14,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
-import static com.github.forax.macro.Macro.CONSTANT_CLASS;
 import static com.github.forax.macro.Macro.CONSTANT_VALUE;
 
 public interface multimethods {
@@ -88,7 +87,7 @@ public interface multimethods {
             }
             var target = mostSpecific(mhs);
             if (target == null) {
-              throw new IllegalStateException("no method is more specific than the others !");
+              throw new IllegalStateException("no method is more specific than the others ! " + mhs);
             }
             if (arity != 5) {
               target = MethodHandles.dropArguments(target, target.type().parameterCount(), Collections.nCopies(5 - arity, Object.class));
@@ -98,8 +97,33 @@ public interface multimethods {
       return new MultimethodImpl(mh);
     }
 
+    private static Class<?> box(Class<?> type) {
+      if (!type.isPrimitive()) {
+        return type;
+      }
+      return switch (type.getName()) {
+        case "boolean" -> Boolean.class;
+        case "byte" -> Byte.class;
+        case "char" -> Character.class;
+        case "short" -> Short.class;
+        case "int" -> Integer.class;
+        case "long" -> Long.class;
+        case "float" -> Float.class;
+        case "double" -> Double.class;
+        default -> throw new AssertionError();
+      };
+    }
+
+    private static MethodType box(MethodType methodType) {
+      for(var i =0; i < methodType.parameterCount(); i++) {
+        var parameterType = methodType.parameterType(i);
+        methodType = methodType.changeParameterType(i, box(parameterType));
+      }
+      return methodType;
+    }
+
     private static List<MethodHandle> applicableMethods(Lookup lookup, Class<?> declaringClass, String name, List<Class<?>> parameterTypes) {
-      return Arrays.stream(declaringClass.getDeclaredMethods())
+      return Arrays.stream(declaringClass.getDeclaredMethods())   // we do not support inheritance
           .filter(m -> !m.isBridge() &&
               m.getName().equals(name) &&
               ((m.isVarArgs() && m.getParameterCount() <= parameterTypes.size()) || m.getParameterCount() == parameterTypes.size()))
@@ -110,11 +134,17 @@ public interface multimethods {
             } catch (IllegalAccessException e) {
               return null;
             }
+
+            // convert varargs
             if (m.isVarArgs()) {
               var lastParameter = mh.type().parameterType(mh.type().parameterCount() - 1);
               mh = mh.asSpreader(lastParameter, 1 + parameterTypes.size() - mh.type().parameterCount());
             }
 
+            // box if necessary (we don't support primitive types)
+            mh = mh.asType(box(mh.type()));
+
+            // applicable test
             if (!moreSpecific(MethodType.methodType(Object.class, parameterTypes), mh.type().dropParameterTypes(0, 1))) {
               return null;
             }
